@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package payment.v1;
+
+option go_package = "github.com/JumpCodeFrog/fintech-payment-engine/api/proto/payment/v1;paymentv1";
+
+service PaymentService {
+  // Создание или перевод платежа с гарантией идемпотентности
+  rpc ProcessTransfer (ProcessTransferRequest) returns (ProcessTransferResponse);
+  
+  // Получение актуального баланса счета
+  rpc GetAccountBalance (GetAccountBalanceRequest) returns (GetAccountBalanceResponse);
+  
+  // Получение статуса транзакции по Idempotency Key
+  rpc GetTransactionStatus (GetTransactionStatusRequest) returns (GetTransactionStatusResponse);
+}
+
+message ProcessTransferRequest {
+  string idempotency_key = 1;
+  string source_account_id = 2;
+  string target_account_id = 3;
+  string amount = 4; // Передаем как строку для сохранения точности decimal
+  string currency = 5;
+}
+
+message ProcessTransferResponse {
+  string transaction_id = 1;
+  string status = 2;
+  string created_at = 3;
+}
+
+message GetAccountBalanceRequest {
+  string account_id = 1;
+}
+
+message GetAccountBalanceResponse {
+  string account_id = 1;
+  string currency = 2;
+  string available_balance = 3;
+  string frozen_balance = 4;
+}
+
+message GetTransactionStatusRequest {
+  string idempotency_key = 1;
+}
+
+message GetTransactionStatusResponse {
+  string transaction_id = 1;
+  string status = 2;
+  string error_reason = 3;
+}

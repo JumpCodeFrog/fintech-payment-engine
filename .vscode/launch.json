@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "🚀 Launch Payment API",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/api",
+      "env": {
+        "POSTGRES_DSN": "postgres://postgres:password@localhost:5432/fintech_db?sslmode=disable",
+        "REDIS_ADDR": "localhost:6379",
+        "KAFKA_BROKERS": "localhost:19092",
+        "HTTP_PORT": "8081",
+        "GRPC_PORT": "50051"
+      }
+    },
+    {
+      "name": "🔄 Launch Outbox Worker",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/outbox-worker",
+      "env": {
+        "POSTGRES_DSN": "postgres://postgres:password@localhost:5432/fintech_db?sslmode=disable",
+        "KAFKA_BROKERS": "localhost:19092"
+      }
+    }
+  ]
+}

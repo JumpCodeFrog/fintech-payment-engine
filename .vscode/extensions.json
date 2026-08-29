@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "golang.go",
+    "ms-azuretools.vscode-docker",
+    "bufbuild.vscode-buf",
+    "tamasfe.even-better-toml",
+    "eamodio.gitlens"
+  ]
+}
