@@ -1,47 +1,38 @@
-# Binaries for programs and plugins
+# Binaries and build artifacts
+bin/
+dist/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-bin/
-dist/
 
-# Test binary and coverage
+# Test artifacts and coverage
 *.test
 *.out
 coverage.out
 
-# Dependency directories
+# Dependencies and workspace
 vendor/
-
-# Go workspace file
 go.work
 
-# Environment & local files
+# Environment and local configurations
 .env
-.env.local
+.env.*
 *.local
+*.jsonc
 
-# IDE & Editor
+# Editor and IDE configurations
 .idea/
 *.swp
 *.swo
 *~
 
-# AI Assistant configs & local tooling
-.continue/
-.kilo/
-.cline/
-.agents/
-*mcp*.json
-*.jsonc
-
-# OS files
-Thumbs.db
+# Operating System files
 .DS_Store
+Thumbs.db
 
-# Docker volumes
+# Local database volumes
 pg_data/
 redis_data/
 redpanda_data/
