@@ -9,6 +9,7 @@ import (
 // AccountRepository defines persistence operations required for accounts.
 type AccountRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Account, error)
+	GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*Account, error)
 	Update(ctx context.Context, account *Account) error
 }
 
