@@ -1,4 +1,4 @@
-.PHONY: up down restart logs psql redis test test-race demo proto help
+.PHONY: up down restart logs psql redis migrate test test-race demo proto help
 
 help:
 	@echo "Fintech Payment Engine Commands:"
@@ -7,6 +7,7 @@ help:
 	@echo "  make logs     - View docker logs"
 	@echo "  make psql     - Open PostgreSQL shell"
 	@echo "  make redis    - Open Redis CLI"
+	@echo "  make migrate  - Apply all PostgreSQL up migrations"
 	@echo "  make test     - Run unit & integration tests"
 	@echo "  make test-race - Run tests with the race detector"
 	@echo "  make demo     - Run the gRPC transfer demo"
@@ -27,6 +28,12 @@ psql:
 
 redis:
 	docker exec -it fintech_redis redis-cli
+
+migrate:
+	@for migration in migrations/*.up.sql; do \
+		echo "Applying $$migration"; \
+		docker exec -i fintech_postgres psql -v ON_ERROR_STOP=1 -U postgres -d fintech_db < "$$migration" || exit 1; \
+	done
 
 test:
 	go test ./...
