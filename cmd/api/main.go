@@ -56,7 +56,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("failed to close gRPC listener", "error", err)
+		}
+	}()
 
 	server := grpc.NewServer()
 	paymentv1.RegisterPaymentServiceServer(server, handler)
