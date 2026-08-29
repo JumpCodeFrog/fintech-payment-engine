@@ -7,11 +7,10 @@
 bin/
 dist/
 
-# Test binary, built with `go test -c`
+# Test binary and coverage
 *.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+coverage.out
 
 # Dependency directories
 vendor/
@@ -22,12 +21,21 @@ go.work
 # Environment & local files
 .env
 .env.local
+*.local
 
 # IDE & Editor
 .idea/
 *.swp
 *.swo
 *~
+
+# AI Assistant configs & local tooling
+.continue/
+.kilo/
+.cline/
+.agents/
+*mcp*.json
+*.jsonc
 
 # OS files
 Thumbs.db
