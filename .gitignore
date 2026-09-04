@@ -34,5 +34,4 @@ Thumbs.db
 
 # Local database volumes
 pg_data/
-redis_data/
 redpanda_data/

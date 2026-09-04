@@ -31,7 +31,7 @@ func TestTransferUseCaseExecute(t *testing.T) {
 				IdempotencyKey:  "transfer-1",
 				SourceAccountID: largerID,
 				TargetAccountID: smallerID,
-				Amount:          decimal.RequireFromString("25.50"),
+				Amount:          decimal.RequireFromString("25.50000"),
 				Currency:        "USD",
 			},
 			accounts: map[uuid.UUID]*domain.Account{
@@ -87,6 +87,39 @@ func TestTransferUseCaseExecute(t *testing.T) {
 			wantErr: domain.ErrInvalidAmount,
 		},
 		{
+			name: "amount below database scale",
+			input: TransferInput{
+				IdempotencyKey:  "transfer-too-small",
+				SourceAccountID: smallerID,
+				TargetAccountID: largerID,
+				Amount:          decimal.RequireFromString("0.00001"),
+				Currency:        "USD",
+			},
+			wantErr: domain.ErrInvalidAmount,
+		},
+		{
+			name: "amount requires database rounding",
+			input: TransferInput{
+				IdempotencyKey:  "transfer-too-precise",
+				SourceAccountID: smallerID,
+				TargetAccountID: largerID,
+				Amount:          decimal.RequireFromString("1.23456"),
+				Currency:        "USD",
+			},
+			wantErr: domain.ErrInvalidAmount,
+		},
+		{
+			name: "amount exceeds database precision",
+			input: TransferInput{
+				IdempotencyKey:  "transfer-too-large",
+				SourceAccountID: smallerID,
+				TargetAccountID: largerID,
+				Amount:          decimal.RequireFromString("100000000000000.0000"),
+				Currency:        "USD",
+			},
+			wantErr: domain.ErrInvalidAmount,
+		},
+		{
 			name: "accounts must differ",
 			input: TransferInput{
 				IdempotencyKey:  "transfer-5",
@@ -98,7 +131,6 @@ func TestTransferUseCaseExecute(t *testing.T) {
 			wantErr: domain.ErrInvalidAmount,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			accounts := &accountRepositoryStub{accounts: tt.accounts}

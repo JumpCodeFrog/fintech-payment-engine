@@ -15,14 +15,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      postgres:
+        image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fintech_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fintech_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/fintech_test?sslmode=disable
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
 
@@ -33,12 +51,18 @@ jobs:
         run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: v2.13.2
 
       - name: Build API
         run: go build -trimpath -o bin/api ./cmd/api
 
       - name: Build Worker
         run: go build -trimpath -o bin/worker ./cmd/worker
+
+      - name: Build API image
+        run: docker build -f deployments/Dockerfile.api -t fintech-payment-engine-api:ci .
+
+      - name: Build Worker image
+        run: docker build -f deployments/Dockerfile.worker -t fintech-payment-engine-worker:ci .

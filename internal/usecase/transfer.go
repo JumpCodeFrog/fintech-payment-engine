@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
+
+const moneyScale int32 = 4
+
+var maximumMoneyValue = decimal.RequireFromString("99999999999999.9999")
 
 type TransferInput struct {
 	IdempotencyKey  string
@@ -48,7 +53,7 @@ func NewTransferUseCase(
 }
 
 func (uc *TransferUseCase) Execute(ctx context.Context, input TransferInput) (*TransferOutput, error) {
-	if !input.Amount.GreaterThan(decimal.Zero) {
+	if !isStoredMoney(input.Amount) || !input.Amount.GreaterThan(decimal.Zero) {
 		return nil, domain.ErrInvalidAmount
 	}
 	if input.SourceAccountID == input.TargetAccountID {
@@ -62,7 +67,8 @@ func (uc *TransferUseCase) Execute(ctx context.Context, input TransferInput) (*T
 			return fmt.Errorf("get transaction by idempotency key: %w", err)
 		}
 		if existing != nil {
-			return domain.ErrIdempotencyConflict
+			output, err = replayTransfer(existing, input)
+			return err
 		}
 
 		firstID, secondID := input.SourceAccountID, input.TargetAccountID
@@ -98,10 +104,15 @@ func (uc *TransferUseCase) Execute(ctx context.Context, input TransferInput) (*T
 			return domain.ErrInsufficientFunds
 		}
 
-		now := time.Now().UTC()
-		source.Balance = source.Balance.Sub(input.Amount)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		sourceBalance := source.Balance.Sub(input.Amount)
+		targetBalance := target.Balance.Add(input.Amount)
+		if !isStoredMoney(sourceBalance) || !isStoredMoney(targetBalance) {
+			return domain.ErrBalanceLimitExceeded
+		}
+		source.Balance = sourceBalance
 		source.UpdatedAt = now
-		target.Balance = target.Balance.Add(input.Amount)
+		target.Balance = targetBalance
 		target.UpdatedAt = now
 
 		if err := uc.accounts.Update(txCtx, source); err != nil {
@@ -167,8 +178,41 @@ func (uc *TransferUseCase) Execute(ctx context.Context, input TransferInput) (*T
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrIdempotencyConflict) {
+			existing, lookupErr := uc.transactions.GetByIdempotencyKey(ctx, input.IdempotencyKey)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("get transaction after idempotency conflict: %w", lookupErr)
+			}
+			if existing != nil {
+				return replayTransfer(existing, input)
+			}
+		}
 		return nil, err
 	}
 
 	return output, nil
+}
+
+func replayTransfer(existing *domain.Transaction, input TransferInput) (*TransferOutput, error) {
+	if existing.SourceAccountID == nil ||
+		existing.TargetAccountID == nil ||
+		*existing.SourceAccountID != input.SourceAccountID ||
+		*existing.TargetAccountID != input.TargetAccountID ||
+		!existing.Amount.Equal(input.Amount) ||
+		existing.Currency != input.Currency {
+		return nil, domain.ErrIdempotencyConflict
+	}
+
+	return &TransferOutput{
+		TransactionID: existing.ID,
+		Status:        existing.Status,
+		CreatedAt:     existing.CreatedAt.UTC(),
+	}, nil
+}
+
+func isStoredMoney(value decimal.Decimal) bool {
+	if value.LessThan(decimal.Zero) || value.GreaterThan(maximumMoneyValue) {
+		return false
+	}
+	return value.Exponent() >= -moneyScale || value.Equal(value.Truncate(moneyScale))
 }
