@@ -149,8 +149,8 @@ func parseTransferRequest(req *paymentv1.ProcessTransferRequest) (usecase.Transf
 
 func (h *PaymentHandler) mapError(ctx context.Context, err error) error {
 	switch {
-	case errors.Is(err, domain.ErrInsufficientFunds):
-		return status.Error(codes.FailedPrecondition, domain.ErrInsufficientFunds.Error())
+	case errors.Is(err, domain.ErrInsufficientFunds), errors.Is(err, domain.ErrBalanceLimitExceeded):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrAccountNotFound):
 		return status.Error(codes.NotFound, domain.ErrAccountNotFound.Error())
 	case errors.Is(err, domain.ErrInvalidAmount), errors.Is(err, domain.ErrCurrencyMismatch):

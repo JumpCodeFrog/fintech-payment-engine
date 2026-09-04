@@ -13,22 +13,25 @@
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-Compatible-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![CI Passing](https://img.shields.io/github/actions/workflow/status/JumpCodeFrog/fintech-payment-engine/ci.yml?branch=main&style=for-the-badge&label=CI%20Passing)](https://github.com/JumpCodeFrog/fintech-payment-engine/actions/workflows/ci.yml)
-[![Zero Race Conditions](https://img.shields.io/badge/Zero_Race_Conditions-Verified-2EA44F?style=for-the-badge)](https://go.dev/doc/articles/race_detector)
-[![Clean Architecture](https://img.shields.io/badge/Architecture-Clean-8A2BE2?style=for-the-badge)](#архитектура)
 
-**Высокопроизводительный отказоустойчивый распределённый ledger и платёжный движок с Transactional Outbox, сквозной идемпотентностью и gRPC.**
+**Конкурентно-безопасный ledger и платёжный движок на Go с PostgreSQL, gRPC, Transactional Outbox, идемпотентным replay и Kafka.**
 
 </div>
 
-`fintech-payment-engine` показывает, как сохранять корректность денежных переводов при высокой конкуренции и надёжно доставлять платёжные события в Kafka. Доменная логика отделена от PostgreSQL, Kafka и gRPC явными интерфейсами, поэтому критические финансовые правила тестируются без запуска инфраструктуры.
+<p align="center">
+  <img src="assets/fintech-payment-engine-demo.png" alt="Проверенный demo параллельных переводов: сохранение баланса, публикация Outbox и доставка Kafka" width="100%">
+</p>
+
+`fintech-payment-engine` показывает, как сохранять денежные инварианты при конкуренции и публиковать платёжные события через Transactional Outbox. Доменная логика отделена от PostgreSQL, Kafka и gRPC явными интерфейсами; критические пути покрыты unit-тестами и интеграционными тестами с настоящим PostgreSQL.
 
 ## Ключевые Архитектурные Решения
 
-- **Защита от двойного списания при конкуренции** - перевод блокирует оба счёта в детерминированном порядке через `SELECT ... FOR UPDATE`, применяет optimistic versioning и хранит деньги в `decimal.Decimal`, а не в `float64`.
-- **Атомарность платежа и Outbox-события** - изменения балансов, ledger-транзакция и событие Outbox фиксируются одной PostgreSQL-транзакцией, устраняя проблему dual write между базой и Kafka.
-- **Надёжная доставка At-Least-Once** - параллельные Worker-процессы выбирают события через `FOR UPDATE SKIP LOCKED`, публикуют их с Kafka `acks=all` и сохраняют retry либо финальный статус ошибки.
-- **Чистая архитектура по построению** - use case зависит только от доменных интерфейсов; closure-паттерн `Transactor` передаёт транзакционный контекст, не раскрывая `pgx.Tx` бизнес-слою.
-- **Production-grade pipeline** - CI выполняет race-тесты с coverage и lint, а API и Worker собираются в минимальные multi-stage контейнеры и запускаются под непривилегированным UID/GID `10001`.
+- **Безопасность Балансов при Конкуренции** - перевод блокирует оба счёта в детерминированном порядке UUID через `SELECT ... FOR UPDATE`, затем применяет optimistic versioning. Race-тест с настоящим PostgreSQL доказывает отсутствие overspend и сохранение общей суммы.
+- **Точный Денежный Домен** - значения хранятся в `decimal.Decimal` и должны точно представляться как PostgreSQL `NUMERIC(18,4)`. Слишком мелкие суммы, неявное округление, переполнение precision и переполнение целевого баланса отклоняются до commit.
+- **Идемпотентный Replay Перевода** - идентичный запрос возвращает исходную транзакцию; тот же ключ с другим payload отклоняется. Конкурентные дубликаты создают одну ledger-запись и одно Outbox-событие.
+- **Атомарный Ledger и Outbox** - изменения балансов, запись транзакции и pending-событие Outbox фиксируются одной PostgreSQL-транзакцией без dual write между БД и Kafka.
+- **Доставка At-Least-Once** - Worker-процессы выбирают события через `FOR UPDATE SKIP LOCKED`, синхронно публикуют с Kafka `acks=all` и сохраняют retry либо финальный статус ошибки.
+- **Воспроизводимые Проверки** - CI запускает race-enabled unit- и PostgreSQL integration-тесты, lint фиксированной версии, сборку бинарников и обоих production container images. API и Worker собираются в статические multi-stage образы под UID/GID `10001`.
 
 ## Архитектура
 
@@ -56,11 +59,12 @@ flowchart LR
 
 ### Модель Консистентности Перевода
 
-1. Use case проверяет сумму, идентификаторы счетов, валюту и ключ идемпотентности.
-2. UUID обоих счетов сортируются перед блокировкой строк, поэтому конкурентные переводы всегда захватывают блокировки в одном порядке.
-3. Балансы обновляются с условием `WHERE id = $1 AND version = $2`, а PostgreSQL атомарно увеличивает версию.
-4. Ledger-запись и Outbox-событие `payment.transferred` создаются до фиксации транзакции.
-5. Worker доставляет события с семантикой at-least-once, поэтому downstream consumers должны быть идемпотентными.
+1. Use case проверяет идентификаторы счетов, валюту, ключ идемпотентности и точное представление `NUMERIC(18,4)`.
+2. Точный идемпотентный replay возвращает исходную транзакцию; изменённый payload с тем же ключом отклоняется.
+3. UUID обоих счетов сортируются перед блокировкой, поэтому конкурентные переводы захватывают locks в одном порядке.
+4. Балансы обновляются с условием `WHERE id = $1 AND version = $2`, а PostgreSQL атомарно увеличивает version.
+5. Ledger-запись и Outbox-событие `payment.transferred` создаются до commit.
+6. Worker доставляет события с семантикой at-least-once, поэтому consumers дедуплицируют их по event или transaction identity.
 
 ## Технологический Стек
 
@@ -74,7 +78,7 @@ flowchart LR
 | Надёжность | Transactional Outbox | Атомарная запись в БД и гарантированная публикация событий |
 | Конкурентность | `FOR UPDATE`, `SKIP LOCKED` | Защита от double spending и горизонтальное масштабирование Worker |
 | Контейнеры | Docker, Alpine Linux | Статические multi-stage сборки под non-root пользователем |
-| Качество | Go race detector, golangci-lint, GitHub Actions | Автоматические тесты, lint, coverage и проверка сборки |
+| Качество | Go race detector, реальный PostgreSQL, golangci-lint, GitHub Actions | Проверки конкуренции, replay, money domain, lint и сборки |
 
 ## Быстрый Старт
 
@@ -90,7 +94,7 @@ flowchart LR
 make up
 ```
 
-Команда запускает PostgreSQL 16, Redpanda, Redpanda Console, Redis, Jaeger, Prometheus и Grafana. При первой инициализации data volume PostgreSQL автоматически выполняет подключённые миграции.
+Команда запускает PostgreSQL 16, Redpanda и Redpanda Console, затем создаёт настроенный Kafka topic (`payment-events` по умолчанию). PostgreSQL выполняет только подключённые up-миграции при инициализации data volume.
 
 ### 2. Применение Миграций
 
@@ -124,11 +128,14 @@ KAFKA_BROKERS=localhost:19092 go run ./cmd/worker
 make demo
 ```
 
-### 5. Race-тесты
+### 5. Запуск Тестов
 
 ```bash
 make test-race
+make test-integration
 ```
+
+`make test-integration` использует PostgreSQL, запущенный через `make up`, создаёт изолированную временную схему и проверяет сохранение баланса при конкуренции, точный идемпотентный replay и границы `NUMERIC(18,4)`.
 
 ## Demo: Инвариант Сохранения Денег
 
@@ -161,18 +168,18 @@ fintech-payment-engine/
 |   |-- domain/                    # Сущности, статусы, ошибки, repository ports
 |   |-- usecase/                   # Независимая от фреймворков оркестрация перевода
 |   |-- delivery/grpc/             # Валидация запросов и mapping domain -> gRPC
-|   |-- repository/postgres/       # pgx-репозитории и адаптер транзакционного контекста
+|   |-- repository/postgres/       # pgx-репозитории и транзакционный context adapter
+|   |-- integration/               # Тесты конкуренции и replay с настоящим PostgreSQL
 |   `-- worker/                    # Polling Transactional Outbox и retry policy
 |-- pkg/
 |   |-- config/                    # Конфигурация из переменных окружения
 |   `-- kafka/                     # Абстракция синхронного Kafka producer
 |-- migrations/                    # Схема БД и детерминированные seed-данные
 |-- deployments/
-|   |-- docker-compose.yml         # Локальный инфраструктурный стек
+|   |-- docker-compose.yml         # PostgreSQL, Redpanda и Redpanda Console
 |   |-- Dockerfile.api             # Non-root образ API
-|   |-- Dockerfile.worker          # Non-root образ Worker
-|   `-- prometheus.yml             # Конфигурация Prometheus
-|-- .github/workflows/ci.yml       # Тесты, race detector, lint и сборка бинарников
+|   `-- Dockerfile.worker          # Non-root образ Worker
+|-- .github/workflows/ci.yml       # Race-тесты, PostgreSQL integration, lint, сборка
 |-- Makefile                       # Команды локальной разработки
 `-- go.mod                         # Go-модуль и закреплённые зависимости
 ```

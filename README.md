@@ -13,22 +13,25 @@
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-Compatible-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![CI Passing](https://img.shields.io/github/actions/workflow/status/JumpCodeFrog/fintech-payment-engine/ci.yml?branch=main&style=for-the-badge&label=CI%20Passing)](https://github.com/JumpCodeFrog/fintech-payment-engine/actions/workflows/ci.yml)
-[![Zero Race Conditions](https://img.shields.io/badge/Zero_Race_Conditions-Verified-2EA44F?style=for-the-badge)](https://go.dev/doc/articles/race_detector)
-[![Clean Architecture](https://img.shields.io/badge/Architecture-Clean-8A2BE2?style=for-the-badge)](#architecture)
 
-**A high-performance, fault-tolerant distributed ledger and payment engine built with Transactional Outbox, end-to-end idempotency, and gRPC.**
+**A concurrency-safe ledger and payment engine in Go with PostgreSQL, gRPC, Transactional Outbox, idempotent replay, and Kafka.**
 
 </div>
 
-`fintech-payment-engine` demonstrates how to keep money movements correct under concurrency while reliably propagating payment events to Kafka. The codebase separates domain rules from PostgreSQL, Kafka, and gRPC through explicit ports, making critical financial behavior testable without infrastructure.
+<p align="center">
+  <img src="assets/fintech-payment-engine-demo.png" alt="Verified concurrent transfer demo: conserved balances, published Outbox events, and consumed Kafka messages" width="100%">
+</p>
+
+`fintech-payment-engine` demonstrates how to preserve monetary invariants under concurrency while propagating payment events through a Transactional Outbox. Domain rules are isolated from PostgreSQL, Kafka, and gRPC through explicit ports; the critical paths are covered by unit tests and real PostgreSQL integration tests.
 
 ## Key Architectural Highlights
 
-- **Zero Double-Spending Under Concurrency** - transfers lock both accounts with deterministic `SELECT ... FOR UPDATE` ordering, use optimistic version checks, and represent money with `decimal.Decimal` instead of `float64`.
-- **Atomic Payments & Outbox Events** - balance mutations, the immutable ledger transaction, and the Outbox event are committed in one PostgreSQL transaction, eliminating the database/Kafka dual-write gap.
-- **Reliable At-Least-Once Delivery** - concurrent workers claim pending events through `FOR UPDATE SKIP LOCKED`, publish synchronously with Kafka `acks=all`, and persist retry or terminal failure state.
-- **Pure Clean Architecture by Design** - use cases depend on domain interfaces only; the `Transactor` closure passes a transaction-aware context without leaking `pgx.Tx` into business logic.
-- **Production-Grade Delivery Pipeline** - CI runs race-enabled tests with coverage and linting, while API and Worker ship as minimal multi-stage containers under non-root UID/GID `10001`.
+- **Concurrent Balance Safety** - transfers lock both accounts in deterministic UUID order with `SELECT ... FOR UPDATE`, then use optimistic version checks. A real PostgreSQL race test verifies that concurrent transfers never overspend and preserve the total balance.
+- **Exact Money Domain** - values use `decimal.Decimal` and must be exactly representable as PostgreSQL `NUMERIC(18,4)`. Sub-scale amounts, implicit rounding, precision overflow, and target-balance overflow are rejected before commit.
+- **Idempotent Transfer Replay** - an identical request returns the original transaction; the same key with a different payload is rejected. Concurrent duplicate requests commit one ledger record and one Outbox event.
+- **Atomic Ledger & Outbox** - balance mutations, the transaction record, and the pending Outbox event are committed in one PostgreSQL transaction, avoiding a database/Kafka dual write.
+- **At-Least-Once Event Delivery** - workers claim pending events through `FOR UPDATE SKIP LOCKED`, publish synchronously with Kafka `acks=all`, and persist retry or terminal failure state.
+- **Reproducible Delivery Checks** - CI runs race-enabled unit and PostgreSQL integration tests, fixed-version linting, binary builds, and both production container builds. API and Worker images are static multi-stage builds running as UID/GID `10001`.
 
 ## Architecture
 
@@ -56,11 +59,12 @@ flowchart LR
 
 ### Transfer Consistency Model
 
-1. The use case validates the amount, account identities, currency, and idempotency key.
-2. Both account UUIDs are sorted before row locking, ensuring every concurrent transfer acquires locks in the same order.
-3. Balance updates use `WHERE id = $1 AND version = $2`; PostgreSQL increments the version atomically.
-4. The ledger record and `payment.transferred` Outbox event are inserted before the transaction commits.
-5. The Worker publishes events with at-least-once semantics. Consumers must therefore be idempotent.
+1. The use case validates account identities, currency, idempotency key, and exact `NUMERIC(18,4)` representation.
+2. An exact idempotent replay returns the original transaction; a changed payload with the same key is rejected.
+3. Both account UUIDs are sorted before row locking, so concurrent transfers acquire locks in one order.
+4. Balance updates use `WHERE id = $1 AND version = $2`; PostgreSQL increments the version atomically.
+5. The ledger record and `payment.transferred` Outbox event are inserted before commit.
+6. The Worker publishes with at-least-once semantics, so consumers must deduplicate by event or transaction identity.
 
 ## Technology Stack
 
@@ -74,7 +78,7 @@ flowchart LR
 | Reliability | Transactional Outbox | Atomic database writes and reliable event propagation |
 | Concurrency | `FOR UPDATE`, `SKIP LOCKED` | Double-spend prevention and horizontally scalable workers |
 | Containers | Docker, Alpine Linux | Static multi-stage builds running as non-root |
-| Quality | Go race detector, golangci-lint, GitHub Actions | Automated test, lint, coverage, and build gates |
+| Quality | Go race detector, real PostgreSQL tests, golangci-lint, GitHub Actions | Concurrency, replay, money-domain, lint, and build gates |
 
 ## Quick Start
 
@@ -90,7 +94,7 @@ flowchart LR
 make up
 ```
 
-This starts PostgreSQL 16, Redpanda, Redpanda Console, Redis, Jaeger, Prometheus, and Grafana. PostgreSQL executes mounted migrations automatically on the first initialization of its data volume.
+This starts PostgreSQL 16, Redpanda, and Redpanda Console, then creates the configured Kafka topic (`payment-events` by default). PostgreSQL executes only the mounted up migrations when its data volume is initialized.
 
 ### 2. Apply Migrations
 
@@ -124,11 +128,14 @@ The API listens on `:50051` by default. Configuration can be overridden with `PO
 make demo
 ```
 
-### 5. Run Race-Enabled Tests
+### 5. Run Tests
 
 ```bash
 make test-race
+make test-integration
 ```
+
+`make test-integration` uses the PostgreSQL started by `make up`, creates an isolated temporary schema, and verifies concurrent balance conservation, exact idempotent replay, and the `NUMERIC(18,4)` money boundary.
 
 ## Demo: Conservation of Total Balance
 
@@ -162,17 +169,17 @@ fintech-payment-engine/
 |   |-- usecase/                   # Framework-independent transfer orchestration
 |   |-- delivery/grpc/             # Request validation and domain-to-gRPC mapping
 |   |-- repository/postgres/       # pgx repositories and transaction context adapter
+|   |-- integration/               # Real PostgreSQL concurrency and replay tests
 |   `-- worker/                    # Transactional Outbox polling and retry policy
 |-- pkg/
 |   |-- config/                    # Environment-driven runtime configuration
 |   `-- kafka/                     # Synchronous Kafka producer abstraction
 |-- migrations/                    # Schema and deterministic seed migrations
 |-- deployments/
-|   |-- docker-compose.yml         # Local infrastructure stack
+|   |-- docker-compose.yml         # PostgreSQL, Redpanda, and Redpanda Console
 |   |-- Dockerfile.api             # Non-root API image
-|   |-- Dockerfile.worker          # Non-root Worker image
-|   `-- prometheus.yml             # Prometheus scrape configuration
-|-- .github/workflows/ci.yml       # Tests, race detector, lint, and binary builds
+|   `-- Dockerfile.worker          # Non-root Worker image
+|-- .github/workflows/ci.yml       # Race tests, PostgreSQL integration, lint, builds
 |-- Makefile                       # Local development commands
 `-- go.mod                         # Go module and pinned dependencies
 ```

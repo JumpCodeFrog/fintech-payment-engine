@@ -1,9 +1,7 @@
-version: '3.8'
-
 services:
   # 1. PostgreSQL 16 (Ledger, Accounts & Outbox)
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: fintech_postgres
     restart: unless-stopped
     environment:
@@ -14,32 +12,18 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ../migrations:/docker-entrypoint-initdb.d:ro
+      - ../migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/000001_init_schema.sql:ro
+      - ../migrations/000002_seed_data.up.sql:/docker-entrypoint-initdb.d/000002_seed_data.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d fintech_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # 2. Redis 7 (Idempotency Key & Redlock)
-  redis:
-    image: redis:7-alpine
-    container_name: fintech_redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
-  # 3. Redpanda (Lightweight, ultra-fast C++ Kafka-compatible broker)
+  # 2. Redpanda (Kafka-compatible broker)
   kafka:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2@sha256:da0e105339d4f0ae6b493f1e027843ea6dea199183a444235555efc2b816f941
     container_name: fintech_kafka
     restart: unless-stopped
     command:
@@ -49,18 +33,35 @@ services:
       - --overprovisioned
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://kafka:9092,external://localhost:19092
-      - --pandaproxy-addr 0.0.0.0:8082
-      - --advertise-pandaproxy-addr localhost:8082
     ports:
       - "19092:19092"
-      - "8082:8082"
-      - "9644:9644"
     volumes:
       - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy -X brokers=localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-  # 4. Redpanda Console (Kafka UI)
+  kafka_init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2@sha256:da0e105339d4f0ae6b493f1e027843ea6dea199183a444235555efc2b816f941
+    container_name: fintech_kafka_init
+    environment:
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-payment-events}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        rpk topic create "$$KAFKA_TOPIC" --partitions 3 --replicas 1 -X brokers=kafka:9092 >/dev/null 2>&1 || true
+        rpk topic describe "$$KAFKA_TOPIC" -X brokers=kafka:9092 >/dev/null
+    restart: "no"
+
+  # 3. Redpanda Console (Kafka UI)
   kafka_ui:
-    image: docker.redpanda.com/redpandadata/console:v2.5.2
+    image: docker.redpanda.com/redpandadata/console:v2.5.2@sha256:58dbd75a425b3c60e79a6b6fb46d91d6553594a51751d19e2f47202860cb06e7
     container_name: fintech_kafka_ui
     restart: unless-stopped
     environment:
@@ -68,47 +69,9 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - kafka
-
-  # 5. Jaeger (OpenTelemetry Distributed Tracing UI)
-  jaeger:
-    image: jaegertracing/all-in-one:1.57
-    container_name: fintech_jaeger
-    restart: unless-stopped
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
-    ports:
-      - "16686:16686" # Web UI
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
-
-  # 6. Prometheus (Metrics Scraper)
-  prometheus:
-    image: prom/prometheus:v2.51.2
-    container_name: fintech_prometheus
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-
-  # 7. Grafana (Dashboards)
-  grafana:
-    image: grafana/grafana:10.4.2
-    container_name: fintech_grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
+      kafka_init:
+        condition: service_completed_successfully
 
 volumes:
   pg_data:
-  redis_data:
   redpanda_data:
